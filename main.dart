@@ -156,16 +156,24 @@ class _SongShelfState extends State<SongShelf> {
   @override
   void initState() {
     super.initState();
-    _future = _cache.putIfAbsent(
-        widget.query, () => appService.searchSongs(widget.query));
+    _future = _load();
+  }
+
+  Future<List<SongModel>> _load() {
+    return _cache.putIfAbsent(widget.query, () {
+      final f = appService.searchSongs(widget.query);
+      // Never keep a failed request cached, or Retry would return the failure.
+      f.catchError((_) {
+        _cache.remove(widget.query);
+        return <SongModel>[];
+      });
+      return f;
+    });
   }
 
   void _retry() {
     _cache.remove(widget.query);
-    setState(() {
-      _future = _cache.putIfAbsent(
-          widget.query, () => appService.searchSongs(widget.query));
-    });
+    setState(() => _future = _load());
   }
 
   @override
@@ -378,6 +386,9 @@ class _CategoryPageState extends State<CategoryPage> {
     _future = appService.searchSongs(widget.query);
   }
 
+  void _retry() =>
+      setState(() => _future = appService.searchSongs(widget.query));
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -392,9 +403,21 @@ class _CategoryPageState extends State<CategoryPage> {
           }
           final songs = snap.data ?? [];
           if (songs.isEmpty) {
-            return const Center(
-                child: Text('Could not load songs',
-                    style: TextStyle(color: Colors.white54)));
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Could not load songs',
+                      style: TextStyle(color: Colors.white54)),
+                  const SizedBox(height: 8),
+                  FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: kAccent),
+                    onPressed: _retry,
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            );
           }
           return ListView(
             children: [
@@ -438,8 +461,14 @@ class RadioTab extends StatelessWidget {
     messenger.showSnackBar(SnackBar(
         content: Text('Starting $title…'),
         duration: const Duration(seconds: 2)));
-    final songs = await appService.searchSongs(query);
+    List<SongModel> songs;
+    try {
+      songs = await appService.searchSongs(query);
+    } catch (_) {
+      songs = [];
+    }
     if (songs.isEmpty) {
+      messenger.hideCurrentSnackBar();
       messenger.showSnackBar(
           const SnackBar(content: Text('Could not load this station')));
       return;
@@ -598,7 +627,12 @@ class _SearchTabState extends State<SearchTab> {
 
   Future<void> _performSearch(String query) async {
     setState(() => _isSearching = true);
-    final results = await appService.searchSongs(query);
+    List<SongModel> results;
+    try {
+      results = await appService.searchSongs(query);
+    } catch (_) {
+      results = [];
+    }
     if (mounted) {
       setState(() {
         _results = results;
@@ -689,7 +723,11 @@ class MiniPlayer extends StatelessWidget {
                   Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
                   Text(
                       p.error ??
-                          (p.isLoadingStream ? 'Loading…' : song.artist),
+                          (p.isLoadingStream
+                              ? (p.loadProgress > 0
+                                  ? 'Loading… ${(p.loadProgress * 100).round()}%'
+                                  : 'Loading…')
+                              : song.artist),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

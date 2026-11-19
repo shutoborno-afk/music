@@ -171,6 +171,8 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                   const SizedBox(height: 4),
                   _seekBar(p, song),
                   _controls(p),
+                  const SizedBox(height: 4),
+                  _volumeBar(p),
                   _bottomBar(p),
                   const SizedBox(height: 8),
                 ],
@@ -338,6 +340,47 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     );
   }
 
+  Widget _volumeBar(PlayerProvider p) {
+    final icon = p.isMuted
+        ? CupertinoIcons.speaker_slash_fill
+        : p.volume < 0.5
+            ? CupertinoIcons.speaker_1_fill
+            : CupertinoIcons.speaker_2_fill;
+    return Row(
+      children: [
+        IconButton(
+          iconSize: 20,
+          color: Colors.white60,
+          icon: Icon(icon),
+          onPressed: p.toggleMute,
+        ),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 4,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+              overlayShape: SliderComponentShape.noOverlay,
+              activeTrackColor: Colors.white,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.white,
+            ),
+            child: Slider(
+              value: p.volume,
+              min: 0,
+              max: 1,
+              // Apply live while dragging, save to prefs only when released.
+              onChanged: (v) => p.setVolume(v, persist: false),
+              onChangeEnd: (v) => p.setVolume(v),
+            ),
+          ),
+        ),
+        const Icon(CupertinoIcons.speaker_3_fill,
+            size: 20, color: Colors.white60),
+        const SizedBox(width: 12),
+      ],
+    );
+  }
+
   Widget _controls(PlayerProvider p) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -349,11 +392,23 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
           onPressed: p.previous,
         ),
         p.isLoadingStream
-            ? const SizedBox(
+            ? SizedBox(
                 width: 64,
                 height: 64,
-                child:
-                    CupertinoActivityIndicator(radius: 16, color: Colors.white))
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    const CupertinoActivityIndicator(
+                        radius: 16, color: Colors.white),
+                    if (p.loadProgress > 0)
+                      Positioned(
+                        bottom: 0,
+                        child: Text('${(p.loadProgress * 100).round()}%',
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 11)),
+                      ),
+                  ],
+                ))
             : IconButton(
                 iconSize: 64,
                 color: Colors.white,

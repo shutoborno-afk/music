@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -19,6 +20,9 @@ class PlayerProvider extends ChangeNotifier {
   List<LyricLine> lyrics = [];
   bool lyricsLoading = false;
   bool isLoadingStream = false;
+  double loadProgress = 0; // 0..1 while downloading audio
+  double volume = 1.0;
+  double _volumeBeforeMute = 1.0;
   String? error;
   bool shuffle = false;
   bool repeat = false;
@@ -30,19 +34,26 @@ class PlayerProvider extends ChangeNotifier {
   Color dominantColor = const Color(0xFF2C2C2E);
   Color vibrantColor = const Color(0xFFFA2D48);
   int _token = 0;
+  bool _handledCompletion = false;
 
   bool get isPlaying => audioPlayer.playing && error == null;
+  bool get isMuted => volume <= 0.001;
 
   PlayerProvider() {
     audioPlayer.playerStateStream.listen((state) {
-      if (state.processingState == ProcessingState.completed &&
-          !isLoadingStream) {
-        if (repeat) {
-          audioPlayer.seek(Duration.zero);
-          audioPlayer.play();
-        } else {
-          next();
+      if (state.processingState == ProcessingState.completed) {
+        // Fire once per track (the stream re-emits `completed`).
+        if (!_handledCompletion && !isLoadingStream) {
+          _handledCompletion = true;
+          if (repeat) {
+            audioPlayer.seek(Duration.zero);
+            audioPlayer.play();
+          } else {
+            next();
+          }
         }
+      } else {
+        _handledCompletion = false;
       }
       notifyListeners();
     });
@@ -55,6 +66,8 @@ class PlayerProvider extends ChangeNotifier {
       _prefs = await SharedPreferences.getInstance();
       favorites = _decode(_prefs!.getString('favorites'));
       recents = _decode(_prefs!.getString('recents'));
+      volume = (_prefs!.getDouble('volume') ?? 1.0).clamp(0.0, 1.0);
+      await audioPlayer.setVolume(volume);
       notifyListeners();
     } catch (_) {}
   }
@@ -96,6 +109,18 @@ class PlayerProvider extends ChangeNotifier {
     _save();
   }
 
+  // ---------- volume ----------
+  Future<void> setVolume(double v, {bool persist = true}) async {
+    volume = v.clamp(0.0, 1.0);
+    if (volume > 0.001) _volumeBeforeMute = volume;
+    notifyListeners();
+    await audioPlayer.setVolume(volume);
+    if (persist) _prefs?.setDouble('volume', volume);
+  }
+
+  void toggleMute() =>
+      setVolume(isMuted ? (_volumeBeforeMute <= 0.001 ? 0.7 : _volumeBeforeMute) : 0.0);
+
   // ---------- playback ----------
   Future<void> playSong(SongModel song, {List<SongModel>? newQueue}) async {
     if (newQueue != null) queue = newQueue;
@@ -103,18 +128,31 @@ class PlayerProvider extends ChangeNotifier {
     final token = ++_token;
     currentSong = song;
     isLoadingStream = true;
+    loadProgress = 0;
     error = null;
     lyrics = [];
     lyricsLoading = false;
+    _handledCompletion = false;
     _addRecent(song);
-    audioPlayer.stop();
     notifyListeners();
 
+    // Stop whatever was playing without blocking on it.
+    unawaited(audioPlayer.stop().catchError((_) {}));
     _extractColors(song.artworkUrl);
 
     try {
-      final file = await _service.downloadAudio(song.id);
+      var lastUi = 0.0;
+      final file = await _service.downloadAudio(song.id, onProgress: (p) {
+        if (token != _token) return;
+        // Throttle UI rebuilds to ~every 4%.
+        if (p - lastUi >= 0.04 || p >= 1) {
+          lastUi = p;
+          loadProgress = p;
+          notifyListeners();
+        }
+      });
       if (token != _token) return;
+
       await audioPlayer.setAudioSource(
         AudioSource.uri(
           Uri.file(file.path),
@@ -123,14 +161,15 @@ class PlayerProvider extends ChangeNotifier {
             album: 'Apple Music Clone',
             title: song.title,
             artist: song.artist,
-            artUri: Uri.parse(song.artworkUrl),
+            artUri: Uri.tryParse(song.artworkUrl),
           ),
         ),
       );
       if (token != _token) return;
+      await audioPlayer.setVolume(volume);
       isLoadingStream = false;
       notifyListeners();
-      audioPlayer.play();
+      unawaited(audioPlayer.play());
 
       lyricsLoading = true;
       notifyListeners();
@@ -143,6 +182,7 @@ class PlayerProvider extends ChangeNotifier {
     } catch (e) {
       if (token == _token) {
         isLoadingStream = false;
+        lyricsLoading = false;
         var msg = e.toString().replaceAll('\n', ' ');
         if (msg.length > 90) msg = msg.substring(0, 90);
         error = 'Playback failed: $msg';
