@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io' show Directory, File;
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/song_model.dart';
 
@@ -24,21 +26,37 @@ class YoutubeLyricsService {
     }
   }
 
-  Future<String?> getAudioStreamUrl(String videoId) async {
-    try {
-      final manifest = await _yt.videos.streamsClient.getManifest(videoId);
-      final audio = manifest.audioOnly;
-      final mp4 =
-          audio.where((s) => s.container == StreamContainer.mp4).toList();
-      if (mp4.isNotEmpty) {
-        mp4.sort((a, b) =>
-            b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-        return mp4.first.url.toString();
-      }
-      return audio.withHighestBitrate().url.toString();
-    } catch (_) {
-      return null;
+  /// Downloads the audio to a cache file (most reliable way to play on Android)
+  /// and returns it. Throws on failure.
+  Future<File> downloadAudio(String videoId) async {
+    final base = await getTemporaryDirectory();
+    final dir = Directory('${base.path}/audio_cache');
+    if (!await dir.exists()) await dir.create(recursive: true);
+
+    final manifest = await _yt.videos.streamsClient.getManifest(videoId);
+    final audio = manifest.audioOnly;
+    final mp4 = audio.where((s) => s.container == StreamContainer.mp4).toList();
+    final AudioOnlyStreamInfo info;
+    if (mp4.isNotEmpty) {
+      mp4.sort((a, b) =>
+          b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+      info = mp4.first;
+    } else {
+      info = audio.withHighestBitrate();
     }
+
+    final ext = info.container == StreamContainer.mp4 ? 'm4a' : 'webm';
+    final file = File('${dir.path}/$videoId.$ext');
+    if (await file.exists() && await file.length() > 0) return file;
+
+    final part = File('${file.path}.part');
+    final sink = part.openWrite();
+    try {
+      await sink.addStream(_yt.videos.streamsClient.get(info));
+    } finally {
+      await sink.close();
+    }
+    return part.rename(file.path);
   }
 
   Future<List<LyricLine>> fetchSyncedLyrics(String title, String artist) async {
@@ -60,8 +78,8 @@ class YoutubeLyricsService {
     } catch (_) {}
 
     try {
-      final r = await http.get(
-          Uri.https('lrclib.net', '/api/search', {'q': '$cleanTitle $cleanArtist'}));
+      final r = await http.get(Uri.https(
+          'lrclib.net', '/api/search', {'q': '$cleanTitle $cleanArtist'}));
       if (r.statusCode == 200) {
         final list = jsonDecode(r.body);
         if (list is List) {

@@ -1,7 +1,7 @@
 name: apple_music_clone
 description: Serverless Apple Music UI clone with YouTube streaming and synced lyrics.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 environment:
   sdk: '>=3.2.0 <4.0.0'
 dependencies:
@@ -16,6 +16,8 @@ dependencies:
   palette_generator: ^0.3.3+4
   cached_network_image: ^3.4.1
   provider: ^6.1.2
+  path_provider: ^2.1.4
+  shared_preferences: ^2.3.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
